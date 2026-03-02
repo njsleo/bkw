@@ -20,7 +20,7 @@ except KeyError:
 
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# --- 辅助函数：读取上传文件 ---
+# --- 辅助函数 ---
 def read_file(uploaded_file):
     if uploaded_file.name.endswith('.txt'):
         return uploaded_file.getvalue().decode("utf-8")
@@ -29,26 +29,23 @@ def read_file(uploaded_file):
         return "\n".join([para.text for para in doc.paragraphs])
     return None
 
-# --- 辅助函数：获取模板列表 ---
 def get_templates():
-    # 检查 templates 文件夹是否存在
     if not os.path.exists("templates"):
         return []
-    # 找出所有 .pptx 文件
     return [f for f in os.listdir("templates") if f.endswith(".pptx")]
 
-# 3. 侧边栏：选择 PPT 模板
+# 3. 侧边栏
 st.sidebar.header("🎨 幻灯片设置")
 template_files = get_templates()
 
 if not template_files:
-    st.sidebar.warning("未检测到模板！请在项目的 `templates` 文件夹中放入 .pptx 文件。当前将使用默认白底模板。")
+    st.sidebar.warning("未检测到模板！请在 `templates` 文件夹中放入 .pptx 文件。当前将使用默认白底模板。")
     selected_template = None
 else:
     selected_template = st.sidebar.selectbox("请选择一个 PPT 模板：", template_files)
     selected_template_path = os.path.join("templates", selected_template)
 
-# 4. 主界面：文件上传与处理
+# 4. 主界面
 st.markdown("### 第一步：上传试题或教案素材 (支持 .txt / .docx)")
 uploaded_file = st.file_uploader("请上传你的文档：", type=['txt', 'docx'])
 
@@ -60,7 +57,7 @@ if uploaded_file is not None:
     if st.button("🪄 按「一题一页」生成 PPT"):
         with st.spinner('DeepSeek 正在拆解试题并套用模板，请稍候...'):
             try:
-                # 核心改进：修改 Prompt，强制要求一题一页
+                # 给 AI 的提示词
                 prompt = f"""
                 请阅读以下物理教学素材（可能是试卷、题库或教案），将其转化为 PPT 大纲。
                 核心要求：如果是试题，请务必做到【一道题单独占用一页幻灯片】。将题干、选项和解析放在同一页的要点中。
@@ -89,14 +86,13 @@ if uploaded_file is not None:
                 result_text = result_text.replace("```json", "").replace("```", "").strip()
                 ppt_data = json.loads(result_text)
                 
-                # 加载用户选择的模板
+                # 加载模板
                 if selected_template:
                     prs = Presentation(selected_template_path)
-                    st.info(f"🎨 正在使用模板：{selected_template}")
                 else:
                     prs = Presentation() 
 
-                # 遍历数据写入 PPT
+                # 写入 PPT
                 for slide_data in ppt_data:
                     slide_layout = prs.slide_layouts[1] 
                     slide = prs.slides.add_slide(slide_layout)
@@ -116,14 +112,35 @@ if uploaded_file is not None:
                                 p.text = point
                                 p.level = 0
 
-                # 保存并提供下载
+                # 保存到内存
                 ppt_stream = io.BytesIO()
                 prs.save(ppt_stream)
                 ppt_stream.seek(0)
                 
                 st.success("🎉 PPT 生成完毕！")
+
+                # ==========================================
+                # 新增功能：网页端内容卡片预览
+                # ==========================================
+                st.markdown("---")
+                st.markdown("### 👀 幻灯片内容预览")
+                
+                # 使用两列排版，让预览看起来更紧凑
+                cols = st.columns(2)
+                for i, slide_data in enumerate(ppt_data):
+                    col = cols[i % 2] # 左右列交替摆放
+                    with col:
+                        # 用带边框的容器模拟一张幻灯片
+                        with st.container(border=True):
+                            st.markdown(f"**第 {i+1} 页：{slide_data.get('title', '无标题')}**")
+                            for point in slide_data.get("content", []):
+                                st.markdown(f"- {point}")
+                st.markdown("---")
+                # ==========================================
+                
+                # 提供下载按钮
                 st.download_button(
-                    label="📥 点击下载生成的 PPTX 文件",
+                    label="📥 对预览满意？点击下载生成的 PPTX 文件",
                     data=ppt_stream,
                     file_name="AI试题精讲.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
