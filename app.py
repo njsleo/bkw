@@ -8,8 +8,8 @@ import os
 
 # 1. 页面基本设置
 st.set_page_config(page_title="AI 物理备课助手", page_icon="⚛️", layout="wide")
-st.title("⚛️ AI 物理备课助手 - 试题精讲版")
-st.markdown("上传物理试题或解析，选择喜欢的模板，AI 将自动为你生成**「一题一页」**的精美幻灯片。")
+st.title("⚛️ AI 物理备课助手 - 灵活指令版")
+st.markdown("上传物理试题或教案，选择模板并下达你的专属指令，AI 将为你量身定制幻灯片。")
 
 # 2. 读取 API Key
 try:
@@ -34,38 +34,51 @@ def get_templates():
         return []
     return [f for f in os.listdir("templates") if f.endswith(".pptx")]
 
-# 3. 侧边栏
+# 3. 侧边栏：模板选择
 st.sidebar.header("🎨 幻灯片设置")
 template_files = get_templates()
 
 if not template_files:
-    st.sidebar.warning("未检测到模板！请在 `templates` 文件夹中放入 .pptx 文件。当前将使用默认白底模板。")
+    st.sidebar.warning("未检测到模板！请在 `templates` 文件夹中放入 .pptx 文件。")
     selected_template = None
 else:
     selected_template = st.sidebar.selectbox("请选择一个 PPT 模板：", template_files)
     selected_template_path = os.path.join("templates", selected_template)
 
-# 4. 主界面
+# 4. 主界面：三步走
 st.markdown("### 第一步：上传试题或教案素材 (支持 .txt / .docx)")
 uploaded_file = st.file_uploader("请上传你的文档：", type=['txt', 'docx'])
+
+# ==========================================
+# 新增功能：自定义 AI 指令输入框
+# ==========================================
+st.markdown("### 第二步：对 AI 的特殊要求 (选填)")
+custom_instructions = st.text_area(
+    "有什么特别想嘱咐 AI 的？(例如：'只要题干不需要解析'、'只提取核心公式'、'每页字数少一点')", 
+    height=100,
+    placeholder="如果留空，AI 将默认采用「一题一页带解析」或「提取核心大纲」的标准模式。"
+)
+# ==========================================
 
 if uploaded_file is not None:
     file_content = read_file(uploaded_file)
     st.success("✅ 文件读取成功！")
     
-    st.markdown("### 第二步：一键生成 PPT")
-    if st.button("🪄 按「一题一页」生成 PPT"):
-        with st.spinner('DeepSeek 正在拆解试题并套用模板，请稍候...'):
+    st.markdown("### 第三步：一键生成 PPT")
+    if st.button("🪄 开始生成 PPT"):
+        with st.spinner('DeepSeek 正在听取你的要求并排版幻灯片，请稍候...'):
             try:
-                # 给 AI 的提示词
-                prompt = f"""
-                请阅读以下物理教学素材（可能是试卷、题库或教案），将其转化为 PPT 大纲。
-                核心要求：如果是试题，请务必做到【一道题单独占用一页幻灯片】。将题干、选项和解析放在同一页的要点中。
+                # 将用户的自定义指令融入系统提示词中
+                instruction_text = f"\n【⚠️ 用户的特殊要求】：请你务必严格遵守以下要求来处理素材：\n{custom_instructions}\n" if custom_instructions.strip() else ""
                 
-                请严格按照以下 JSON 数组格式输出，不要包含任何其他说明文字或 Markdown 标记：
+                prompt = f"""
+                请阅读以下物理教学素材，将其转化为 PPT 大纲。
+                {instruction_text}
+                
+                无论用户的要求是什么，【输出格式】必须绝对遵守以下 JSON 数组格式，绝对不要包含任何其他说明文字、开场白或 Markdown 标记（如 ```json 等）：
                 [
-                    {{"title": "第1题 (或知识点标题)", "content": ["题目内容...", "A. ... B. ...", "【解析】..."]}},
-                    {{"title": "第2题 (或知识点标题)", "content": ["题目内容...", "【解析】..."]}}
+                    {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}},
+                    {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}}
                 ]
                 
                 教学素材内容如下：
@@ -75,7 +88,7 @@ if uploaded_file is not None:
                 response = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
-                        {"role": "system", "content": "你是一位严谨的高中物理特级教师。输出必须是纯 JSON 格式。"},
+                        {"role": "system", "content": "你是一位严谨、听指令的高中物理特级教师。输出必须是纯 JSON 格式。"},
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.2 
@@ -119,34 +132,29 @@ if uploaded_file is not None:
                 
                 st.success("🎉 PPT 生成完毕！")
 
-                # ==========================================
-                # 新增功能：网页端内容卡片预览
-                # ==========================================
+                # 网页端内容卡片预览
                 st.markdown("---")
                 st.markdown("### 👀 幻灯片内容预览")
-                
-                # 使用两列排版，让预览看起来更紧凑
                 cols = st.columns(2)
                 for i, slide_data in enumerate(ppt_data):
-                    col = cols[i % 2] # 左右列交替摆放
+                    col = cols[i % 2]
                     with col:
-                        # 用带边框的容器模拟一张幻灯片
                         with st.container(border=True):
                             st.markdown(f"**第 {i+1} 页：{slide_data.get('title', '无标题')}**")
                             for point in slide_data.get("content", []):
                                 st.markdown(f"- {point}")
                 st.markdown("---")
-                # ==========================================
                 
-                # 提供下载按钮
+                # 下载按钮
                 st.download_button(
                     label="📥 对预览满意？点击下载生成的 PPTX 文件",
                     data=ppt_stream,
-                    file_name="AI试题精讲.pptx",
+                    file_name="AI定制物理备课.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 )
 
             except json.JSONDecodeError:
-                st.error("❌ AI 返回的数据格式有误，请重新点击生成按钮试一下。")
+                st.error("❌ AI 太过于关注您的特殊要求，导致返回的数据格式有误，请稍微修改要求并重试。")
+                st.code(result_text) # 打印出来方便看哪里错了
             except Exception as e:
                 st.error(f"❌ 发生错误：{e}")
