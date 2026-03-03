@@ -3,8 +3,3 @@ openai
 python-pptx
 python-docx
 duckduckgo-search
-langchain
-langchain-community
-langchain-huggingface
-faiss-cpu
-sentence-transformers

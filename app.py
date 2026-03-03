@@ -10,14 +10,9 @@ import os
 from duckduckgo_search import DDGS
 
 # ==========================================
-# 新增：RAG 知识库核心组件
+# 1. 页面与全局设置
 # ==========================================
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-
-st.set_page_config(page_title="物理备课工作站", page_icon="⚛️", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="物理教研工作站", page_icon="⚛️", layout="wide", initial_sidebar_state="expanded")
 
 try:
     api_key = st.secrets["DEEPSEEK_API_KEY"]
@@ -27,37 +22,33 @@ except KeyError:
 
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# ==========================================
-# 初始化 AI 的“海马体” (向量嵌入模型)
-# ==========================================
-@st.cache_resource
-def get_embeddings():
-    # 使用专门针对中文优化的轻量级向量模型，体积小且免费
-    return HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
-
-embeddings = get_embeddings()
-DB_PATH = "faiss_index"
-
-def load_db():
-    if os.path.exists(DB_PATH):
-        return FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
-    return None
-
-# 初始化状态
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "老师好！我已经升级了**永久记忆引擎**。在左侧上传教案并存入知识库后，以后无论何时，您都可以随时让我去记忆库里翻找资料！"}]
+    st.session_state.messages = [{"role": "assistant", "content": "老师好！我已经连接了您的**专属云盘**，并切换至**物理学史引课模式**。您可以随时让我从云盘里提取资料，或者帮您构思引课故事。"}]
 if "ppt_data" not in st.session_state:
     st.session_state.ppt_data = None
 if "current_context" not in st.session_state:
     st.session_state.current_context = ""
 
-# 辅助函数
-def read_file(uploaded_file):
-    if uploaded_file.name.endswith('.txt'):
-        return uploaded_file.getvalue().decode("utf-8")
-    elif uploaded_file.name.endswith('.docx'):
-        doc = docx.Document(uploaded_file)
-        return "\n".join([para.text for para in doc.paragraphs])
+# ==========================================
+# 2. 辅助功能函数
+# ==========================================
+def read_file(file_path_or_file_obj):
+    """支持读取上传的文件对象，也支持读取本地云盘的路径"""
+    try:
+        if hasattr(file_path_or_file_obj, 'name'): # 如果是网页上传的文件
+            name = file_path_or_file_obj.name
+            if name.endswith('.txt'):
+                return file_path_or_file_obj.getvalue().decode("utf-8")
+            elif name.endswith('.docx'):
+                return "\n".join([para.text for para in docx.Document(file_path_or_file_obj).paragraphs])
+        else: # 如果是云盘里的本地文件
+            if file_path_or_file_obj.endswith('.txt'):
+                with open(file_path_or_file_obj, 'r', encoding='utf-8') as f:
+                    return f.read()
+            elif file_path_or_file_obj.endswith('.docx'):
+                return "\n".join([para.text for para in docx.Document(file_path_or_file_obj).paragraphs])
+    except Exception as e:
+        return f"读取 {file_path_or_file_obj} 失败: {e}"
     return ""
 
 def get_templates():
@@ -71,46 +62,48 @@ def search_web(query):
     except Exception as e:
         return f"搜索失败: {e}"
 
+# 读取云盘中所有资料
+def read_cloud_drive():
+    cloud_dir = "my_cloud_drive"
+    if not os.path.exists(cloud_dir):
+        return "您的云盘目前是空的。请在 VS Code 中创建 `my_cloud_drive` 文件夹并放入资料。"
+    
+    files = [f for f in os.listdir(cloud_dir) if f.endswith(('.txt', '.docx'))]
+    if not files:
+        return "云盘中未发现 .txt 或 .docx 文件。"
+    
+    all_content = []
+    for f in files:
+        file_path = os.path.join(cloud_dir, f)
+        all_content.append(f"--- 来自云盘文件《{f}》 --- \n" + read_file(file_path))
+    
+    return "\n\n".join(all_content)
+
 # ==========================================
-# 【左栏】：知识库管理 (Knowledge Base)
+# 3. 界面布局：左、中、右
 # ==========================================
+
 with st.sidebar:
-    st.header("🧠 个人物理知识库")
-    st.markdown("将历史教案、好题本存入此库，AI 将永久记住它们。")
+    st.header("☁️ 我的云盘资料库")
+    st.markdown("只要将教案放入 `my_cloud_drive` 文件夹并同步，这里就能自动读取。")
     
-    uploaded_file = st.file_uploader("添加新资料到知识库：", type=['txt', 'docx'])
-    
-    if uploaded_file and st.button("📥 提取并永久存入知识库", use_container_width=True):
-        with st.spinner("正在将文档切片并转化为向量记忆..."):
-            text = read_file(uploaded_file)
-            # 1. 文本切片
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-            chunks = text_splitter.split_text(text)
-            docs = [Document(page_content=chunk, metadata={"source": uploaded_file.name}) for chunk in chunks]
-            
-            # 2. 存入向量数据库 (FAISS)
-            db = load_db()
-            if db:
-                db.add_documents(docs)
-            else:
-                db = FAISS.from_documents(docs, embeddings)
-            
-            # 3. 保存到本地文件夹
-            db.save_local(DB_PATH)
-            st.success(f"✅ 成功将《{uploaded_file.name}》切分为 {len(chunks)} 个记忆碎片并存入大脑！")
+    if st.button("🔄 扫描并加载云盘资料", use_container_width=True):
+        with st.spinner("正在读取云盘文件..."):
+            cloud_content = read_cloud_drive()
+            st.session_state.current_context = cloud_content
+            st.success("云盘资料已成功加载到 AI 记忆中！")
+            with st.expander("查看云盘加载内容"):
+                st.write(cloud_content[:500] + "......")
 
     st.markdown("---")
     st.header("🎨 主题与模板")
-    topic = st.text_input("当前备课课题：", placeholder="例如：电磁感应")
+    topic = st.text_input("当前备课课题：", placeholder="例如：法拉第电磁感应定律")
     template_files = get_templates()
     selected_template = st.selectbox("选择 PPT 模板：", template_files) if template_files else None
     selected_template_path = os.path.join("templates", selected_template) if selected_template else None
 
 col_chat, col_studio = st.columns([6, 4], gap="large")
 
-# ==========================================
-# 【中栏】：聊天区
-# ==========================================
 with col_chat:
     st.header("💬 智能教研对话")
     
@@ -122,60 +115,61 @@ with col_chat:
     st.markdown("⚡ **快捷教研指令**")
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     
+    # 核心改动 1：物理学史与科学家引课
     with btn_col1:
-        if st.button("🌐 联网找引课", use_container_width=True):
+        if st.button("🕰️ 找物理学史作引课", use_container_width=True):
             if not topic: st.warning("请先输入课题")
             else:
-                st.session_state.messages.append({"role": "user", "content": f"帮我联网找“{topic}”的最新科技应用作引课。"})
+                st.session_state.messages.append({"role": "user", "content": f"帮我搜索“{topic}”的发现历程和相关科学家的故事，用来做课堂引课。"})
                 with chat_container:
                     st.chat_message("user").write(st.session_state.messages[-1]["content"])
                     with st.chat_message("assistant"):
-                        with st.spinner("🌍 检索中..."):
-                            search_results = search_web(f"{topic} 科技应用")
-                            prompt = f"根据以下最新资料，用幽默口吻写一段引课开场白：\n{search_results}"
+                        with st.spinner("🌍 正在检索物理学史与科学家轶事..."):
+                            # 修改搜索词，精准打击学史和出处
+                            search_results = search_web(f"{topic} 物理学史 发现过程 科学家故事 起源")
+                            
+                            prompt = f"""
+                            你是一位极具魅力的物理老师。用户想找关于“{topic}”的引课素材。我为你联网搜索到了以下历史资料：
+                            \n{search_results}\n
+                            请你根据这些资料，以该知识点的【出处、发展历程和核心科学家】为切入点，用讲故事的口吻写一段引人入胜的课堂开场白。
+                            """
                             response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.7)
                             reply = response.choices[0].message.content
                             st.write(reply)
-                            st.session_state.current_context = reply # 暂存为生成PPT的上下文
+                            st.session_state.current_context += "\n\n" + reply 
                             st.session_state.messages.append({"role": "assistant", "content": reply})
 
+    # 核心改动 2：直接从云盘里找资料
     with btn_col2:
-        if st.button("🧠 从知识库翻找", use_container_width=True):
+        if st.button("☁️ 从我的云盘提取", use_container_width=True):
             if not topic: st.warning("请先输入课题")
+            elif not st.session_state.current_context: st.warning("请先在左侧点击【扫描并加载云盘资料】")
             else:
-                db = load_db()
-                if not db:
-                    st.error("知识库还是空的，请先在左侧上传资料存入大脑！")
-                else:
-                    st.session_state.messages.append({"role": "user", "content": f"请从我的个人知识库中，翻找关于“{topic}”的历史备课资料，并提取最核心的要点。"})
-                    with chat_container:
-                        st.chat_message("user").write(st.session_state.messages[-1]["content"])
-                        with st.chat_message("assistant"):
-                            with st.spinner("🧠 正在大脑深处检索记忆..."):
-                                # 核心：向量相似度检索
-                                results = db.similarity_search(topic, k=4)
-                                kb_content = "\n\n".join([f"【来自片段 {i+1}】: {r.page_content}" for i, r in enumerate(results)])
-                                
-                                prompt = f"以下是从我的历史知识库中检索到的关于“{topic}”的记忆碎片：\n{kb_content}\n\n请帮我整理这些内容，形成一份清晰的备课要点。"
-                                response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3)
-                                reply = response.choices[0].message.content
-                                st.write(reply)
-                                st.session_state.current_context = reply 
-                                st.session_state.messages.append({"role": "assistant", "content": reply})
+                st.session_state.messages.append({"role": "user", "content": f"请结合我云盘里的资料，提取关于“{topic}”的备课核心要点。"})
+                with chat_container:
+                    st.chat_message("user").write(st.session_state.messages[-1]["content"])
+                    with st.chat_message("assistant"):
+                        with st.spinner("🧠 正在云盘中筛选相关知识..."):
+                            prompt = f"这是我云盘里的所有教案资料：\n{st.session_state.current_context}\n\n请你从中找出与“{topic}”最相关的内容，并整理成备课要点。"
+                            response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3)
+                            reply = response.choices[0].message.content
+                            st.write(reply)
+                            st.session_state.messages.append({"role": "assistant", "content": reply})
 
     with btn_col3:
         if st.button("🪄 一键做成 PPT", type="primary", use_container_width=True):
             if not topic: st.warning("请先输入课题")
             else:
-                st.session_state.messages.append({"role": "user", "content": f"请根据我们刚聊的内容，为“{topic}”生成PPT并发送到Studio。"})
+                st.session_state.messages.append({"role": "user", "content": f"请根据我们刚聊的内容（包括学史引课和云盘资料），为“{topic}”生成PPT。"})
                 with chat_container:
                     st.chat_message("user").write(st.session_state.messages[-1]["content"])
                     with st.chat_message("assistant"):
                         with st.spinner("🎨 排版中..."):
+                            # 结合聊天记录和云盘资料生成PPT
+                            chat_history = "\n".join([m["content"] for m in st.session_state.messages[-3:]])
                             prompt = f"""
-                            参考背景信息：{st.session_state.current_context}
-                            
-                            请结合背景信息，为课题“{topic}”生成 PPT 大纲。
+                            参考资料：{chat_history}
+                            请结合参考资料，为课题“{topic}”生成 PPT 大纲。确保把【物理学史/科学家故事】放在PPT的前几页作为引入。
                             【输出格式】必须是纯 JSON 数组，包含 image_suggestion：
                             [ {{"title": "标题", "content": ["要点1", "要点2"], "image_suggestion": "配图建议"}} ]
                             """
@@ -187,7 +181,7 @@ with col_chat:
                                 st.write(reply)
                                 st.session_state.messages.append({"role": "assistant", "content": reply})
                             except Exception as e:
-                                st.error("生成失败。")
+                                st.error("生成失败，请重试。")
 
     if prompt := st.chat_input("自由对话..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -195,15 +189,12 @@ with col_chat:
             st.chat_message("user").write(prompt)
             with st.chat_message("assistant"):
                 with st.spinner("思考中..."):
-                    context_msg = [{"role": "system", "content": "你是物理老师。"}] + st.session_state.messages
+                    context_msg = [{"role": "system", "content": "你是资深物理老师。"}] + st.session_state.messages
                     response = client.chat.completions.create(model="deepseek-chat", messages=context_msg, temperature=0.6)
                     reply = response.choices[0].message.content
                     st.write(reply)
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# ==========================================
-# 【右栏】：Studio
-# ==========================================
 with col_studio:
     st.header("✨ Studio 工作区")
     if st.session_state.ppt_data is None:
