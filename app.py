@@ -248,17 +248,70 @@ with col_chat:
                             st.write(reply)
                             st.session_state.messages.append({"role": "assistant", "content": reply})
 
-    if prompt := st.chat_input("和 Agent 聊聊教研..."):
+    # ================= 替换从这里开始 =================
+    if prompt := st.chat_input("输入指令试试：把文档前三道题做成PPT..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_container:
             st.chat_message("user").write(prompt)
             with st.chat_message("assistant"):
-                with st.spinner("思考中..."):
-                    context_msg = [{"role": "system", "content": "你是资深物理老师。"}] + st.session_state.messages
-                    response = client_brain.chat.completions.create(model="deepseek-chat", messages=context_msg, temperature=0.6)
-                    reply = response.choices[0].message.content
-                    st.write(reply)
-                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                
+                # 【智能路由】：判断用户是想“聊天”还是想“做PPT”
+                if "ppt" in prompt.lower() or "幻灯片" in prompt or "排版" in prompt:
+                    with st.spinner("🧠 收到排版指令，正在精确提取内容并生成 PPT..."):
+                        # 生成 PPT 的专属指令，强制要求带上文档记忆和用户特殊要求
+                        ppt_prompt = f"""
+                        参考本地文档资料：\n{st.session_state.current_context}\n
+                        
+                        用户的新指令是：“{prompt}”
+                        请严格按照用户的指令（例如只选取前三道题），从资料中提取内容生成 PPT 大纲。
+                        
+                        【核心任务】：对于每一页，你需要判断配图的类型（image_type）。
+                        - 宏观场景/历史人物 -> "creative" (并在 image_prompt 写英文提示词)
+                        - 具体的习题图/电路图 -> "schematic" (image_prompt 为空)
+                        - 不需要图 -> "none"
+                        
+                        【输出格式】必须是纯 JSON 数组：
+                        [ {{"title": "标题", "content": ["要点1"], "image_type": "schematic", "image_prompt": ""}} ]
+                        """
+                        try:
+                            response = client_brain.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": ppt_prompt}], temperature=0.2)
+                            result_text = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+                            ppt_data = json.loads(result_text)
+                            
+                            # 创意图 AI 绘制
+                            for slide in ppt_data:
+                                if slide.get("image_type") == "creative" and slide.get("image_prompt"):
+                                    img_bytes = generate_physics_image(slide["image_prompt"])
+                                    if img_bytes: slide["image_bytes"] = img_bytes
+                            
+                            # 将结果保存并推送到右侧 Studio
+                            st.session_state.ppt_data = ppt_data
+                            reply = "✅ 没问题！我已经按您的要求提取了文档内容，并把生成的 PPT 发送到右侧的 Studio 工作区了，请查收！"
+                            st.write(reply)
+                            st.session_state.messages.append({"role": "assistant", "content": reply})
+                            # 刷新网页渲染右侧界面
+                            st.rerun() 
+                            
+                        except Exception as e:
+                            error_msg = f"生成 PPT 失败，请检查文档内容或重试。（报错：{e}）"
+                            st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            
+                else:
+                    # 普通聊天的逻辑（治好“失忆症”）
+                    with st.spinner("思考中..."):
+                        # 核心修复：把提取的文档内容塞进 AI 的系统大脑里
+                        sys_prompt = "你是资深物理老师。"
+                        if st.session_state.current_context:
+                            sys_prompt += f"\n\n请严格基于以下我提供的本地文档资料来回答问题：\n{st.session_state.current_context}"
+                        
+                        context_msg = [{"role": "system", "content": sys_prompt}] + st.session_state.messages
+                        
+                        response = client_brain.chat.completions.create(model="deepseek-chat", messages=context_msg, temperature=0.6)
+                        reply = response.choices[0].message.content
+                        st.write(reply)
+                        st.session_state.messages.append({"role": "assistant", "content": reply})
+    # ================= 替换到这里结束 =================
 
 with col_studio:
     st.header("✨ Studio 成果区")
