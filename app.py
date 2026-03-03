@@ -29,23 +29,38 @@ client_brain = OpenAI(api_key=api_key_brain, base_url="https://api.deepseek.com"
 client_paint = ZhipuAI(api_key=api_key_paint)
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "老师好！我是满血版的物理 Agent。我现在不仅能提炼教案、讲历史，还能**召唤智谱 CogView 为您画出专属物理配图**，并自动排版进 PPT 和 Word 中！"}]
+    st.session_state.messages = [{"role": "assistant", "content": "老师好！我已经升级了**强力文档解析**和**双轨配图系统**。对于创意引入，我会认真作画；对于习题和严谨电路图，我会为您精准留出截图位置！"}]
 if "ppt_data" not in st.session_state:
     st.session_state.ppt_data = None
 if "current_context" not in st.session_state:
     st.session_state.current_context = ""
 
 # ==========================================
-# 2. 核心技能引擎
+# 2. 强力文档解析引擎 (修复读取失败问题)
 # ==========================================
 def read_file(file_obj):
+    """强力文件读取，兼容多种编码格式"""
     try:
         if file_obj.name.endswith('.txt'):
-            return file_obj.getvalue().decode("utf-8")
+            content_bytes = file_obj.getvalue()
+            try:
+                # 尝试用 UTF-8 解码 (Mac/Linux 默认)
+                return content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    # 尝试用 GBK 解码 (Windows 默认)
+                    return content_bytes.decode("gbk")
+                except Exception:
+                    # 如果都失败，强制忽略错误字符读取
+                    return content_bytes.decode("utf-8", errors="ignore")
+                    
         elif file_obj.name.endswith('.docx'):
-            return "\n".join([para.text for para in docx.Document(file_obj).paragraphs])
-    except Exception:
-        return ""
+            try:
+                return "\n".join([para.text for para in docx.Document(file_obj).paragraphs])
+            except Exception as e:
+                return f"[Docx解析警告: 文件可能包含无法识别的特殊元素 ({e})]"
+    except Exception as e:
+        return f"[严重错误: 读取 {file_obj.name} 失败 ({e})]"
     return ""
 
 def get_templates():
@@ -59,12 +74,15 @@ def search_web(query):
     except Exception:
         return "搜索失败"
 
+# ==========================================
+# 3. 双轨配图与生成逻辑
+# ==========================================
 def generate_physics_image(image_prompt):
-    """调用智谱大模型作图"""
+    """调用智谱大模型作图 (仅限创意类)"""
     try:
         response = client_paint.images.generations(
             model="cogview-3-plus", 
-            prompt=f"一张专业、严谨的高中物理教材插图，用于教学演示。画面内容：{image_prompt}。要求：纯白背景，线条清晰，不要出现任何错乱的英文字母或乱码文字，纯粹展示物理原理或实验现象。",
+            prompt=f"一张专业、充满高级感的高中物理教学幻灯片配图。要求具有纪录片风格的真实感。画面内容：{image_prompt}。要求：纯白背景或深邃背景，绝不要出现任何英文字母、公式或乱码文字，纯粹展示物理历史场景或宏观现象。",
         )
         image_url = response.data[0].url
         img_data = requests.get(image_url).content
@@ -74,8 +92,6 @@ def generate_physics_image(image_prompt):
 
 def generate_word_document(ppt_data, topic_name):
     doc = docx.Document()
-    
-    # 设置全局仿宋
     styles_to_change = ['Normal', 'List Bullet', 'Title', 'Heading 1', 'Heading 2']
     for style_name in styles_to_change:
         try:
@@ -102,12 +118,17 @@ def generate_word_document(ppt_data, topic_name):
                 run.font.name = '仿宋'
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '仿宋')
         
-        # 将 AI 生成的真实图片插入 Word
-        if slide.get("image_bytes"):
+        image_type = slide.get("image_type", "none")
+        if image_type == "creative" and slide.get("image_bytes"):
             img_stream = io.BytesIO(slide["image_bytes"])
             doc.add_picture(img_stream, width=docx.shared.Inches(4.0))
-            p = doc.add_paragraph("图：AI生成物理原理图")
+            p = doc.add_paragraph("图：AI生成创意配图")
             p.runs[0].font.italic = True
+        elif image_type == "schematic":
+            p = doc.add_paragraph(f"✂️ [此处预留空位，请手动截取原卷图片粘贴]")
+            p.runs[0].font.color.rgb = docx.shared.RGBColor(0, 112, 192)
+            
+        for p in doc.paragraphs[-2:]: # Ensure recent paragraphs have font set
             for run in p.runs:
                 run.font.name = '仿宋'
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '仿宋')
@@ -118,17 +139,25 @@ def generate_word_document(ppt_data, topic_name):
     return stream
 
 # ==========================================
-# 3. 界面布局
+# 4. 界面布局
 # ==========================================
 with st.sidebar:
     st.header("📂 本地资料库")
     uploaded_files = st.file_uploader("多选电脑教案 (按住 Command)：", type=['txt', 'docx'], accept_multiple_files=True)
     if uploaded_files:
-        if st.button("📥 提取文件精华", use_container_width=True):
-            with st.spinner("阅读中..."):
-                all_content = [f"《{f.name}》\n{read_file(f)}" for f in uploaded_files]
-                st.session_state.current_context = "\n\n".join(all_content)
-                st.success("✅ 读取完毕！")
+        if st.button("📥 强力解析并提取", use_container_width=True):
+            with st.spinner("正在解析文档..."):
+                all_content = []
+                for f in uploaded_files:
+                    content = read_file(f)
+                    if "[严重错误" in content:
+                        st.error(content)
+                    else:
+                        all_content.append(f"《{f.name}》\n{content}")
+                
+                if all_content:
+                    st.session_state.current_context = "\n\n".join(all_content)
+                    st.success("✅ 文档读取完毕！")
                 
     st.markdown("---")
     topic = st.text_input("备课课题：", placeholder="例如：法拉第电磁感应定律")
@@ -166,36 +195,56 @@ with col_chat:
                             st.session_state.messages.append({"role": "assistant", "content": reply})
 
     with btn_col2:
-        if st.button("🪄 全能排版 (含AI生图)", type="primary", use_container_width=True):
+        if st.button("🪄 双轨智能排版 (生图+预留位)", type="primary", use_container_width=True):
             if not topic: st.warning("先输入课题")
             else:
-                st.session_state.messages.append({"role": "user", "content": f"请为“{topic}”生成教案，并为重点页面配上插图指令。"})
+                st.session_state.messages.append({"role": "user", "content": f"请为“{topic}”生成教案，并智能判断需要 AI 作图还是预留手工截图位。"})
                 with chat_container:
                     st.chat_message("user").write(st.session_state.messages[-1]["content"])
                     with st.chat_message("assistant"):
-                        # 第 1 步：DeepSeek 写大纲
-                        with st.spinner("🧠 大脑正在构思教案逻辑..."):
+                        with st.spinner("🧠 大脑正在智能分类配图需求..."):
+                            # 终极分类 Prompt
                             prompt = f"""
                             参考资料：{st.session_state.current_context}
-                            请为课题“{topic}”生成大纲。
-                            【输出格式】必须是纯 JSON 数组！如果这页需要配图，请在 'image_prompt' 中写出具体的画面描述（不需要则留空）：
-                            [ {{"title": "标题", "content": ["要点1"], "image_prompt": "画面的具体描述"}} ]
+                            请为课题“{topic}”生成教案大纲。
+                            【核心任务】：对于每一页，你需要判断配图的类型（image_type）。
+                            - 如果是历史人物、宏观场景、趣味引入等适合 AI 发挥的画面，设为 "creative"，并在 "image_prompt" 中用英文写下高质量画图提示词。
+                            - 如果是【具体的习题图】、【受力分析图】、【电路图】、【严格的原理示意图】，设为 "schematic"，并让 "image_prompt" 为空。
+                            - 如果不需要图，设为 "none"。
+                            
+                            【输出格式】必须是纯 JSON 数组：
+                            [ 
+                                {{
+                                    "title": "标题", 
+                                    "content": ["要点1"], 
+                                    "image_type": "creative", 
+                                    "image_prompt": "A cinematic shot of Newton..." 
+                                }},
+                                {{
+                                    "title": "例题解析", 
+                                    "content": ["要点1"], 
+                                    "image_type": "schematic", 
+                                    "image_prompt": "" 
+                                }}
+                            ]
                             """
                             response = client_brain.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.2)
                             result_text = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
-                            ppt_data = json.loads(result_text)
+                            try:
+                                ppt_data = json.loads(result_text)
+                            except Exception as e:
+                                st.error("JSON 解析失败，请重试。")
+                                st.stop()
                         
-                        # 第 2 步：智谱 CogView 作图
-                        with st.spinner("🎨 画师正在为您绘制物理插图..."):
+                        with st.spinner("🎨 画师正在专心绘制创意插图..."):
                             for slide in ppt_data:
-                                img_prompt = slide.get("image_prompt", "")
-                                if img_prompt and img_prompt != "无":
-                                    img_bytes = generate_physics_image(img_prompt)
+                                if slide.get("image_type") == "creative" and slide.get("image_prompt"):
+                                    img_bytes = generate_physics_image(slide["image_prompt"])
                                     if img_bytes:
                                         slide["image_bytes"] = img_bytes
                             
                             st.session_state.ppt_data = ppt_data
-                            reply = "✅ 图文教案已生成！插图和排版都在右侧 Studio，可以直接下载 PPT 和 Word 啦！"
+                            reply = "✅ 双轨图文教案生成完毕！您可以去右侧 Studio 验收了。"
                             st.write(reply)
                             st.session_state.messages.append({"role": "assistant", "content": reply})
 
@@ -214,9 +263,8 @@ with col_chat:
 with col_studio:
     st.header("✨ Studio 成果区")
     if st.session_state.ppt_data is None:
-        st.info("👈 在中栏点击【全能排版】后，带配图的终极教案将在这里诞生。")
+        st.info("👈 点击中栏的【双轨智能排版】，查看智能图文分布。")
     else:
-        # 生成 PPT (把 AI 图片贴上去)
         if selected_template_path: prs = Presentation(selected_template_path)
         else: prs = Presentation() 
 
@@ -224,7 +272,6 @@ with col_studio:
             slide = prs.slides.add_slide(prs.slide_layouts[1])
             if slide.shapes.title: slide.shapes.title.text = slide_data.get("title", "无标题")
             
-            # 填入文字
             if len(slide.placeholders) > 1:
                 tf = slide.placeholders[1].text_frame
                 contents = slide_data.get("content", [""])
@@ -235,12 +282,25 @@ with col_studio:
                         p.text = point
                         p.level = 0
             
-            # 贴入 AI 生成的真实图片 (贴在幻灯片右侧)
-            if slide_data.get("image_bytes"):
+            # 双轨配图逻辑
+            image_type = slide_data.get("image_type", "none")
+            
+            if image_type == "creative" and slide_data.get("image_bytes"):
+                # 创意图：贴上真实图片
                 img_stream = io.BytesIO(slide_data["image_bytes"])
                 try:
-                    # 将图片放在距离左边缘 5 英寸，顶边缘 2 英寸的位置，宽度固定 4 英寸
                     slide.shapes.add_picture(img_stream, Inches(5), Inches(2), width=Inches(4))
+                except Exception:
+                    pass
+            elif image_type == "schematic":
+                # 习题图：生成显眼的蓝色预留文字
+                try:
+                    txBox = slide.shapes.add_textbox(Inches(5), Inches(2), Inches(4), Inches(3))
+                    tf = txBox.text_frame
+                    p = tf.paragraphs[0]
+                    p.text = "✂️ 【截图预留位】\n请在此处使用快捷键\n粘贴原卷中的习题配图"
+                    p.font.color.rgb = RGBColor(0, 112, 192)
+                    p.font.size = Pt(20)
                 except Exception:
                     pass
 
@@ -248,23 +308,23 @@ with col_studio:
         prs.save(ppt_stream)
         ppt_stream.seek(0)
         
-        # 生成 Word
         word_stream = generate_word_document(st.session_state.ppt_data, topic if topic else "未命名课题")
         
-        st.success("🎉 生成成功！请下载您的双重授课利器：")
+        st.success("🎉 生成成功！")
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
-            st.download_button("📊 下载带插图 PPT", data=ppt_stream, file_name=f"{topic}_带配图_AI备课.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", type="primary", use_container_width=True)
+            st.download_button("📊 下载 智能双轨 PPT", data=ppt_stream, file_name=f"{topic}_AI备课.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", type="primary", use_container_width=True)
         with dl_col2:
-            st.download_button("📝 下载带插图 仿宋Word", data=word_stream, file_name=f"{topic}_带配图_教案讲义.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="secondary", use_container_width=True)
+            st.download_button("📝 下载 仿宋 Word 讲义", data=word_stream, file_name=f"{topic}_教案讲义.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="secondary", use_container_width=True)
         
-        # 网页端预览
         st.markdown("### 👀 图文讲义预览")
         with st.container(height=500):
             for i, slide_data in enumerate(st.session_state.ppt_data):
                 with st.container(border=True):
                     st.markdown(f"**环节 {i+1}：{slide_data.get('title', '无标题')}**")
                     for point in slide_data.get("content", []): st.markdown(f"- {point}")
-                    # 在网页上直接把生成的图片展示出来
-                    if slide_data.get("image_bytes"):
-                        st.image(slide_data["image_bytes"], caption="AI 绘制的物理插图", width=300)
+                    
+                    if slide_data.get("image_type") == "creative" and slide_data.get("image_bytes"):
+                        st.image(slide_data["image_bytes"], caption="AI 绘制的创意配图", width=300)
+                    elif slide_data.get("image_type") == "schematic":
+                        st.info("✂️ Agent 已为本页预留【原题截图空位】，请下载 PPT 后手动粘贴物理图。")
