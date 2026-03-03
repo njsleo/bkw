@@ -8,8 +8,8 @@ import os
 
 # 1. 页面基本设置
 st.set_page_config(page_title="AI 物理备课助手", page_icon="⚛️", layout="wide")
-st.title("⚛️ AI 物理备课助手 - 灵活指令版")
-st.markdown("上传物理试题或教案，选择模板并下达你的专属指令，AI 将为你量身定制幻灯片。")
+st.title("⚛️ AI 物理备课助手 - 旗舰版")
+st.markdown("选择你的备课方式：让 AI 帮你**提炼文档**，或者让 AI 为你**头脑风暴**。")
 
 # 2. 读取 API Key
 try:
@@ -34,6 +34,55 @@ def get_templates():
         return []
     return [f for f in os.listdir("templates") if f.endswith(".pptx")]
 
+# --- 核心：生成 PPT 并提供下载的函数 ---
+def create_ppt_and_preview(ppt_data, template_path):
+    # 1. 网页端卡片预览
+    st.markdown("---")
+    st.markdown("### 👀 幻灯片内容预览")
+    cols = st.columns(2)
+    for i, slide_data in enumerate(ppt_data):
+        col = cols[i % 2]
+        with col:
+            with st.container(border=True):
+                st.markdown(f"**第 {i+1} 页：{slide_data.get('title', '无标题')}**")
+                for point in slide_data.get("content", []):
+                    st.markdown(f"- {point}")
+    st.markdown("---")
+
+    # 2. 生成真实的 PPT 文件
+    if template_path:
+        prs = Presentation(template_path)
+    else:
+        prs = Presentation() 
+
+    for slide_data in ppt_data:
+        slide_layout = prs.slide_layouts[1] 
+        slide = prs.slides.add_slide(slide_layout)
+        if slide.shapes.title:
+            slide.shapes.title.text = slide_data.get("title", "无标题")
+        if len(slide.placeholders) > 1:
+            body_shape = slide.placeholders[1]
+            tf = body_shape.text_frame
+            contents = slide_data.get("content", [""])
+            if contents:
+                tf.text = contents[0]
+                for point in contents[1:]:
+                    p = tf.add_paragraph()
+                    p.text = point
+                    p.level = 0
+
+    ppt_stream = io.BytesIO()
+    prs.save(ppt_stream)
+    ppt_stream.seek(0)
+    
+    # 3. 提供下载
+    st.download_button(
+        label="📥 方案设计得不错！点击下载 PPT",
+        data=ppt_stream,
+        file_name="AI物理备课.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+
 # 3. 侧边栏：模板选择
 st.sidebar.header("🎨 幻灯片设置")
 template_files = get_templates()
@@ -41,120 +90,120 @@ template_files = get_templates()
 if not template_files:
     st.sidebar.warning("未检测到模板！请在 `templates` 文件夹中放入 .pptx 文件。")
     selected_template = None
+    selected_template_path = None
 else:
     selected_template = st.sidebar.selectbox("请选择一个 PPT 模板：", template_files)
     selected_template_path = os.path.join("templates", selected_template)
 
-# 4. 主界面：三步走
-st.markdown("### 第一步：上传试题或教案素材 (支持 .txt / .docx)")
-uploaded_file = st.file_uploader("请上传你的文档：", type=['txt', 'docx'])
+# ==========================================
+# 4. 主界面：双模式选项卡 (Tabs)
+# ==========================================
+tab1, tab2 = st.tabs(["💡 从主题灵感生成 (AI 帮你设计)", "📄 从本地文档提取 (AI 帮你排版)"])
 
-# ==========================================
-# 新增功能：自定义 AI 指令输入框
-# ==========================================
-st.markdown("### 第二步：对 AI 的特殊要求 (选填)")
-custom_instructions = st.text_area(
-    "有什么特别想嘱咐 AI 的？(例如：'只要题干不需要解析'、'只提取核心公式'、'每页字数少一点')", 
-    height=100,
-    placeholder="如果留空，AI 将默认采用「一题一页带解析」或「提取核心大纲」的标准模式。"
-)
-# ==========================================
-
-if uploaded_file is not None:
-    file_content = read_file(uploaded_file)
-    st.success("✅ 文件读取成功！")
+# ----------------- 模式 A：从主题生成 -----------------
+with tab1:
+    st.markdown("### 告诉 AI 你想讲什么课？")
+    topic = st.text_input("请输入教学主题（例如：楞次定律、动量守恒定律的应用、平抛运动）：", placeholder="例如：带电粒子在匀强磁场中的运动")
     
-    st.markdown("### 第三步：一键生成 PPT")
-    if st.button("🪄 开始生成 PPT"):
-        with st.spinner('DeepSeek 正在听取你的要求并排版幻灯片，请稍候...'):
-            try:
-                # 将用户的自定义指令融入系统提示词中
-                instruction_text = f"\n【⚠️ 用户的特殊要求】：请你务必严格遵守以下要求来处理素材：\n{custom_instructions}\n" if custom_instructions.strip() else ""
-                
-                prompt = f"""
-                请阅读以下物理教学素材，将其转化为 PPT 大纲。
-                {instruction_text}
-                
-                无论用户的要求是什么，【输出格式】必须绝对遵守以下 JSON 数组格式，绝对不要包含任何其他说明文字、开场白或 Markdown 标记（如 ```json 等）：
-                [
-                    {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}},
-                    {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}}
-                ]
-                
-                教学素材内容如下：
-                {file_content}
-                """
-                
-                response = client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "你是一位严谨、听指令的高中物理特级教师。输出必须是纯 JSON 格式。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.2 
-                )
-                
-                # 解析 JSON
-                result_text = response.choices[0].message.content
-                result_text = result_text.replace("```json", "").replace("```", "").strip()
-                ppt_data = json.loads(result_text)
-                
-                # 加载模板
-                if selected_template:
-                    prs = Presentation(selected_template_path)
-                else:
-                    prs = Presentation() 
-
-                # 写入 PPT
-                for slide_data in ppt_data:
-                    slide_layout = prs.slide_layouts[1] 
-                    slide = prs.slides.add_slide(slide_layout)
+    custom_req_topic = st.text_area(
+        "对教学设计的特殊要求 (选填)：", 
+        height=100,
+        key="req_topic",
+        placeholder="例如：'引入部分要结合生活中有趣的例子'、'重点放在受力分析上'、'最后加一道高考真题做结尾'"
+    )
+    
+    if st.button("🚀 让 AI 开始备课设计", key="btn_topic"):
+        if not topic.strip():
+            st.warning("请先输入一个教学主题哦！")
+        else:
+            with st.spinner(f'DeepSeek 正在为你精心设计【{topic}】的教学大纲，请稍候...'):
+                try:
+                    instruction_text = f"\n【⚠️ 用户的特殊要求】：\n{custom_req_topic}\n" if custom_req_topic.strip() else ""
+                    prompt = f"""
+                    你是一位资深的高中物理特级教师。现在请你围绕教学主题“{topic}”，**凭空设计**一份逻辑严密、循序渐进的 PPT 教学大纲。
+                    包含环节建议：课堂引入、核心概念解析、公式推导、例题精讲、课堂小结。
+                    {instruction_text}
                     
-                    if slide.shapes.title:
-                        slide.shapes.title.text = slide_data.get("title", "无标题")
+                    无论设计什么内容，【输出格式】必须绝对遵守以下 JSON 数组格式，绝对不要包含任何其他说明文字或 Markdown 标记：
+                    [
+                        {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}},
+                        {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}}
+                    ]
+                    """
                     
-                    if len(slide.placeholders) > 1:
-                        body_shape = slide.placeholders[1]
-                        tf = body_shape.text_frame
-                        
-                        contents = slide_data.get("content", [""])
-                        if contents:
-                            tf.text = contents[0]
-                            for point in contents[1:]:
-                                p = tf.add_paragraph()
-                                p.text = point
-                                p.level = 0
+                    response = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "你是一位优秀的物理老师。输出必须是纯 JSON 格式。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.6 # 稍微提高一点温度，让 AI 更有创造力
+                    )
+                    
+                    result_text = response.choices[0].message.content
+                    result_text = result_text.replace("```json", "").replace("```", "").strip()
+                    ppt_data = json.loads(result_text)
+                    st.success("🎉 AI 教学设计完成！请审阅下方大纲。")
+                    
+                    # 调用统一的预览和下载函数
+                    create_ppt_and_preview(ppt_data, selected_template_path)
+                    
+                except json.JSONDecodeError:
+                    st.error("❌ AI 返回格式有误，请重试。")
+                except Exception as e:
+                    st.error(f"❌ 发生错误：{e}")
 
-                # 保存到内存
-                ppt_stream = io.BytesIO()
-                prs.save(ppt_stream)
-                ppt_stream.seek(0)
-                
-                st.success("🎉 PPT 生成完毕！")
+# ----------------- 模式 B：从文档提取 -----------------
+with tab2:
+    st.markdown("### 上传试题或教案素材")
+    uploaded_file = st.file_uploader("支持 .txt 或 .docx 格式：", type=['txt', 'docx'])
+    
+    custom_req_doc = st.text_area(
+        "对 AI 的特殊要求 (选填)：", 
+        height=100,
+        key="req_doc",
+        placeholder="例如：'如果是试卷，请做到一题一页'、'只要题干不需要解析'"
+    )
 
-                # 网页端内容卡片预览
-                st.markdown("---")
-                st.markdown("### 👀 幻灯片内容预览")
-                cols = st.columns(2)
-                for i, slide_data in enumerate(ppt_data):
-                    col = cols[i % 2]
-                    with col:
-                        with st.container(border=True):
-                            st.markdown(f"**第 {i+1} 页：{slide_data.get('title', '无标题')}**")
-                            for point in slide_data.get("content", []):
-                                st.markdown(f"- {point}")
-                st.markdown("---")
-                
-                # 下载按钮
-                st.download_button(
-                    label="📥 对预览满意？点击下载生成的 PPTX 文件",
-                    data=ppt_stream,
-                    file_name="AI定制物理备课.pptx",
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                )
-
-            except json.JSONDecodeError:
-                st.error("❌ AI 太过于关注您的特殊要求，导致返回的数据格式有误，请稍微修改要求并重试。")
-                st.code(result_text) # 打印出来方便看哪里错了
-            except Exception as e:
-                st.error(f"❌ 发生错误：{e}")
+    if uploaded_file is not None:
+        file_content = read_file(uploaded_file)
+        st.success("✅ 文件读取成功！")
+        
+        if st.button("🪄 按文档内容生成 PPT", key="btn_doc"):
+            with st.spinner('DeepSeek 正在拆解文档，请稍候...'):
+                try:
+                    instruction_text = f"\n【⚠️ 用户的特殊要求】：\n{custom_req_doc}\n" if custom_req_doc.strip() else ""
+                    prompt = f"""
+                    请阅读以下物理教学素材，将其转化为 PPT 大纲。
+                    {instruction_text}
+                    
+                    【输出格式】必须绝对遵守以下 JSON 数组格式，不要包含任何说明文字：
+                    [
+                        {{"title": "幻灯片标题", "content": ["要点1", "要点2"]}}
+                    ]
+                    
+                    素材内容：
+                    {file_content}
+                    """
+                    
+                    response = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "你是一位严谨的物理老师。输出必须是纯 JSON 格式。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.2 
+                    )
+                    
+                    result_text = response.choices[0].message.content
+                    result_text = result_text.replace("```json", "").replace("```", "").strip()
+                    ppt_data = json.loads(result_text)
+                    st.success("🎉 提取完毕！请审阅下方幻灯片内容。")
+                    
+                    # 调用统一的预览和下载函数
+                    create_ppt_and_preview(ppt_data, selected_template_path)
+                    
+                except json.JSONDecodeError:
+                    st.error("❌ AI 返回格式有误，请重试。")
+                except Exception as e:
+                    st.error(f"❌ 发生错误：{e}")
