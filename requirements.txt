@@ -3,3 +3,5 @@ openai
 python-pptx
 python-docx
 duckduckgo-search
+requests
+zhipuai
